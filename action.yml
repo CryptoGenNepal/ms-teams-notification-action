@@ -1,33 +1,51 @@
 name: 'MS Teams Notification Action'
-description: 'Send a notification to Microsoft Teams when a pull request is opened or reopened'
+description: 'Send a notification to Microsoft Teams for various events including pull requests and deployments'
 inputs:
   webhook_url:
     description: 'Microsoft Teams webhook URL'
     required: true
-  pr_title:
-    description: 'Pull Request title'
+  notification_type:
+    description: 'Type of notification (pr, deployment_started, deployment_finished, custom)'
     required: true
-  pr_url:
-    description: 'Pull Request URL'
+    default: 'custom'
+  title:
+    description: 'Notification title'
     required: true
-  pr_creator:
-    description: 'Pull Request creator'
+  message:
+    description: 'Main notification message'
     required: true
+  url:
+    description: 'URL to link in the notification'
+    required: false
+    default: ''
+  creator:
+    description: 'Person who triggered the event'
+    required: false
+    default: ''
   repo_name:
     description: 'Repository name'
-    required: true
+    required: false
+    default: ''
+  environment:
+    description: 'Deployment environment (dev, staging, production, etc.)'
+    required: false
+    default: ''
+  status:
+    description: 'Status of the event (success, failure, in_progress)'
+    required: false
+    default: 'success'
   theme_color:
     description: 'Theme color for the Teams message card'
     required: false
     default: '0076D7'
-  custom_title:
-    description: 'Custom title for the Teams message card'
-    required: false
-    default: ''
   activity_image:
     description: 'Custom activity image URL'
     required: false
     default: 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png'
+  additional_facts:
+    description: 'JSON string of additional facts to include in the notification'
+    required: false
+    default: '[]'
 runs:
   using: 'composite'
   steps:
@@ -35,13 +53,17 @@ runs:
       shell: bash
       env:
         TEAMS_WEBHOOK_URL: ${{ inputs.webhook_url }}
-        PR_URL: ${{ inputs.pr_url }}
-        PR_TITLE: ${{ inputs.pr_title }}
-        PR_CREATOR: ${{ inputs.pr_creator }}
+        NOTIFICATION_TYPE: ${{ inputs.notification_type }}
+        TITLE: ${{ inputs.title }}
+        MESSAGE: ${{ inputs.message }}
+        URL: ${{ inputs.url }}
+        CREATOR: ${{ inputs.creator }}
         REPO_NAME: ${{ inputs.repo_name }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        STATUS: ${{ inputs.status }}
         THEME_COLOR: ${{ inputs.theme_color }}
-        CUSTOM_TITLE: ${{ inputs.custom_title }}
         ACTIVITY_IMAGE: ${{ inputs.activity_image }}
+        ADDITIONAL_FACTS: ${{ inputs.additional_facts }}
       run: |
         # Function to check if a variable is empty
         is_empty() {
@@ -55,7 +77,7 @@ runs:
         }
 
         # Check all required inputs
-        required_inputs=("TEAMS_WEBHOOK_URL" "PR_URL" "PR_TITLE" "PR_CREATOR" "REPO_NAME")
+        required_inputs=("TEAMS_WEBHOOK_URL" "NOTIFICATION_TYPE" "TITLE" "MESSAGE")
         error_occurred=false
 
         for input in "${required_inputs[@]}"; do
@@ -70,9 +92,17 @@ runs:
         fi
 
         # Set default values for optional inputs
-        TITLE="${CUSTOM_TITLE:-$PR_TITLE}"
         THEME="${THEME_COLOR:-0076D7}"
         IMAGE="${ACTIVITY_IMAGE:-https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png}"
+
+        # Set theme color based on status if not explicitly set
+        if [ "$STATUS" = "success" ] && [ "$THEME_COLOR" = "0076D7" ]; then
+          THEME="00cc00"  # Green for success
+        elif [ "$STATUS" = "failure" ]; then
+          THEME="ff0000"  # Red for failure
+        elif [ "$STATUS" = "in_progress" ]; then
+          THEME="ffcc00"  # Yellow for in progress
+        fi
 
         # Escape special characters in variables
         escape_string() {
@@ -80,41 +110,103 @@ runs:
         }
 
         TITLE_ESCAPED=$(escape_string "$TITLE")
-        PR_CREATOR_ESCAPED=$(escape_string "$PR_CREATOR")
+        MESSAGE_ESCAPED=$(escape_string "$MESSAGE")
+        CREATOR_ESCAPED=$(escape_string "$CREATOR")
         REPO_NAME_ESCAPED=$(escape_string "$REPO_NAME")
-        PR_URL_ESCAPED=$(escape_string "$PR_URL")
+        URL_ESCAPED=$(escape_string "$URL")
+        ENVIRONMENT_ESCAPED=$(escape_string "$ENVIRONMENT")
+
+        # Set activity title based on notification type
+        ACTIVITY_TITLE=""
+        BUTTON_TEXT=""
+        
+        case "$NOTIFICATION_TYPE" in
+          "pr")
+            ACTIVITY_TITLE="Pull Request in $REPO_NAME_ESCAPED"
+            BUTTON_TEXT="View Pull Request"
+            ;;
+          "deployment_started")
+            ACTIVITY_TITLE="Deployment Started: $REPO_NAME_ESCAPED"
+            BUTTON_TEXT="View Deployment"
+            ;;
+          "deployment_finished")
+            ACTIVITY_TITLE="Deployment Finished: $REPO_NAME_ESCAPED"
+            BUTTON_TEXT="View Deployment"
+            ;;
+          *)
+            ACTIVITY_TITLE="$TITLE_ESCAPED"
+            BUTTON_TEXT="View Details"
+            ;;
+        esac
+
+        # Build the facts array dynamically
+        FACTS="["
+        
+        # Add the message as the first fact
+        FACTS="$FACTS{\"name\": \"Details\", \"value\": \"$MESSAGE_ESCAPED\"}"
+        
+        # Add other facts conditionally
+        if [ -n "$REPO_NAME" ]; then
+          FACTS="$FACTS, {\"name\": \"Repository\", \"value\": \"$REPO_NAME_ESCAPED\"}"
+        fi
+        
+        if [ -n "$CREATOR" ]; then
+          FACTS="$FACTS, {\"name\": \"Triggered by\", \"value\": \"$CREATOR_ESCAPED\"}"
+        fi
+        
+        if [ -n "$ENVIRONMENT" ]; then
+          FACTS="$FACTS, {\"name\": \"Environment\", \"value\": \"$ENVIRONMENT_ESCAPED\"}"
+        fi
+        
+        if [ -n "$STATUS" ] && [ "$STATUS" != "success" ]; then
+          STATUS_ESCAPED=$(escape_string "$STATUS")
+          FACTS="$FACTS, {\"name\": \"Status\", \"value\": \"$STATUS_ESCAPED\"}"
+        fi
+        
+        # Add additional facts if provided
+        if [ -n "$ADDITIONAL_FACTS" ] && [ "$ADDITIONAL_FACTS" != "[]" ]; then
+          # Remove the opening and closing brackets from ADDITIONAL_FACTS
+          ADDITIONAL_FACTS_CONTENT=$(echo "$ADDITIONAL_FACTS" | sed 's/^\[//; s/\]$//')
+          
+          if [ -n "$ADDITIONAL_FACTS_CONTENT" ]; then
+            FACTS="$FACTS, $ADDITIONAL_FACTS_CONTENT"
+          fi
+        fi
+        
+        # Close the facts array
+        FACTS="$FACTS]"
+        
+        # Build the actions array conditionally
+        ACTIONS=""
+        if [ -n "$URL" ]; then
+          ACTIONS=", \"potentialAction\": [{
+            \"@type\": \"OpenUri\",
+            \"name\": \"$BUTTON_TEXT\",
+            \"targets\": [{
+              \"os\": \"default\",
+              \"uri\": \"$URL_ESCAPED\"
+            }]
+          }]"
+        fi
 
         # Send the notification
-        curl -H "Content-Type: application/json" -d '{
+        PAYLOAD=$(cat <<EOF
+        {
           "@type": "MessageCard",
           "@context": "http://schema.org/extensions",
-          "themeColor": "'"$THEME"'",
-          "summary": "New PR: '"$TITLE_ESCAPED"'",
+          "themeColor": "$THEME",
+          "summary": "$TITLE_ESCAPED",
           "sections": [{
-            "activityTitle": "New Pull Request in '"$REPO_NAME_ESCAPED"'",
-            "activitySubtitle": "Created by '"$PR_CREATOR_ESCAPED"'",
-            "activityImage": "'"$IMAGE"'",
-            "facts": [{
-              "name": "Title",
-              "value": "'"$TITLE_ESCAPED"'"
-            }, {
-              "name": "Creator",
-              "value": "'"$PR_CREATOR_ESCAPED"'"
-            }, {
-              "name": "Repository",
-              "value": "'"$REPO_NAME_ESCAPED"'"
-            }],
+            "activityTitle": "$ACTIVITY_TITLE",
+            "activitySubtitle": "$TITLE_ESCAPED",
+            "activityImage": "$IMAGE",
+            "facts": $FACTS,
             "markdown": true
-          }],
-          "potentialAction": [{
-            "@type": "OpenUri",
-            "name": "View Pull Request",
-            "targets": [{
-              "os": "default",
-              "uri": "'"$PR_URL_ESCAPED"'"
-            }]
-          }]
-        }' "$TEAMS_WEBHOOK_URL"
+          }]$ACTIONS
+        }
+        EOF
+        )
+        curl -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
 
         if [ $? -ne 0 ]; then
           echo "Failed to send notification to Microsoft Teams."
