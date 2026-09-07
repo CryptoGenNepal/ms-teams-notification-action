@@ -1,49 +1,22 @@
 name: 'MS Teams Notification Action'
-description: 'Send a notification to Microsoft Teams for various events including pull requests and deployments'
+description: 'Send a notification to Microsoft Teams'
 inputs:
   webhook_url:
     description: 'Microsoft Teams webhook URL'
     required: true
-  notification_type:
-    description: 'Type of notification (pr, deployment_started, deployment_finished, custom)'
-    required: true
-    default: 'custom'
   title:
     description: 'Notification title'
-    required: true
-  message:
-    description: 'Main notification message'
     required: true
   url:
     description: 'URL to link in the notification'
     required: false
     default: ''
-  creator:
-    description: 'Person who triggered the event'
-    required: false
-    default: ''
-  repo_name:
-    description: 'Repository name'
-    required: false
-    default: ''
-  environment:
-    description: 'Deployment environment (dev, staging, production, etc.)'
-    required: false
-    default: ''
-  status:
-    description: 'Status of the event (success, failure, in_progress)'
-    required: false
-    default: 'success'
   theme_color:
     description: 'Theme color for the Teams message card'
     required: false
-    default: '0076D7'
-  activity_image:
-    description: 'Custom activity image URL'
-    required: false
-    default: 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png'
+    default: 'ff0000'
   additional_facts:
-    description: 'JSON string of additional facts to include in the notification'
+    description: 'JSON of key-value fields to include in the notification'
     required: false
     default: '[]'
 runs:
@@ -53,57 +26,23 @@ runs:
       shell: bash
       env:
         TEAMS_WEBHOOK_URL: ${{ inputs.webhook_url }}
-        NOTIFICATION_TYPE: ${{ inputs.notification_type }}
         TITLE: ${{ inputs.title }}
-        MESSAGE: ${{ inputs.message }}
         URL: ${{ inputs.url }}
-        CREATOR: ${{ inputs.creator }}
-        REPO_NAME: ${{ inputs.repo_name }}
-        ENVIRONMENT: ${{ inputs.environment }}
-        STATUS: ${{ inputs.status }}
         THEME_COLOR: ${{ inputs.theme_color }}
-        ACTIVITY_IMAGE: ${{ inputs.activity_image }}
         ADDITIONAL_FACTS: ${{ inputs.additional_facts }}
       run: |
-        set -o pipefail
+        if [ -z "$TEAMS_WEBHOOK_URL" ]; then
+          echo "Error: webhook_url is empty."
+          exit 1
+        fi
 
-        # Function to check if a variable is empty
-        is_empty() {
-          local var_name="$1"
-          local var_value="${!var_name}"
-          if [ -z "$var_value" ]; then
-            return 0  # empty
-          fi
-          return 1  # not empty
-        }
-
-        # Check all required inputs
-        required_inputs=("TEAMS_WEBHOOK_URL" "NOTIFICATION_TYPE" "TITLE" "MESSAGE")
-        error_occurred=false
-
-        for input in "${required_inputs[@]}"; do
-          if is_empty "$input"; then
-            error_occurred=true
-          fi
-        done
-
-        if [ "$error_occurred" = true ]; then
-          echo "One or more required inputs are missing. Please check the action configuration."
+        if [ -z "$TITLE" ]; then
+          echo "Error: title is empty."
           exit 1
         fi
 
         # Set default values for optional inputs
-        THEME="${THEME_COLOR:-0076D7}"
-        IMAGE="${ACTIVITY_IMAGE:-https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png}"
-
-        # Set theme color based on status if not explicitly set
-        if [ "$STATUS" = "success" ] && [ "$THEME_COLOR" = "0076D7" ]; then
-          THEME="00cc00"  # Green for success
-        elif [ "$STATUS" = "failure" ]; then
-          THEME="ff0000"  # Red for failure
-        elif [ "$STATUS" = "in_progress" ]; then
-          THEME="ffcc00"  # Yellow for in progress
-        fi
+        THEME="${THEME_COLOR:-ff0000}"
 
         # Escape special characters in variables
         escape_string() {
@@ -111,72 +50,18 @@ runs:
         }
 
         TITLE_ESCAPED=$(escape_string "$TITLE")
-        MESSAGE_ESCAPED=$(escape_string "$MESSAGE")
-        CREATOR_ESCAPED=$(escape_string "$CREATOR")
-        REPO_NAME_ESCAPED=$(escape_string "$REPO_NAME")
         URL_ESCAPED=$(escape_string "$URL")
-        ENVIRONMENT_ESCAPED=$(escape_string "$ENVIRONMENT")
 
-        # Set activity title based on notification type
-        ACTIVITY_TITLE=""
-        BUTTON_TEXT=""
-        
-        case "$NOTIFICATION_TYPE" in
-          "pr")
-            ACTIVITY_TITLE="Pull Request in $REPO_NAME_ESCAPED"
-            BUTTON_TEXT="View Pull Request"
-            ;;
-          "deployment_started")
-            ACTIVITY_TITLE="Deployment Started: $REPO_NAME_ESCAPED"
-            BUTTON_TEXT="View Deployment"
-            ;;
-          "deployment_finished")
-            ACTIVITY_TITLE="Deployment Finished: $REPO_NAME_ESCAPED"
-            BUTTON_TEXT="View Deployment"
-            ;;
-          *)
-            ACTIVITY_TITLE="$TITLE_ESCAPED"
-            BUTTON_TEXT="View Details"
-            ;;
-        esac
+        ACTIVITY_TITLE="$TITLE_ESCAPED"
+        BUTTON_TEXT="View"
 
-        # Build the facts array dynamically
-        FACTS="["
-        
-        # Add the message as the first fact
-        FACTS="$FACTS{\"name\": \"Details\", \"value\": \"$MESSAGE_ESCAPED\"}"
-        
-        # Add other facts conditionally
-        if [ -n "$REPO_NAME" ]; then
-          FACTS="$FACTS, {\"name\": \"Repository\", \"value\": \"$REPO_NAME_ESCAPED\"}"
+
+        FACTS="${ADDITIONAL_FACTS:-[]}"
+        if ! printf '%s' "$FACTS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          echo "Error: additional_facts must be a valid JSON array."
+          exit 1
         fi
-        
-        if [ -n "$CREATOR" ]; then
-          FACTS="$FACTS, {\"name\": \"Triggered by\", \"value\": \"$CREATOR_ESCAPED\"}"
-        fi
-        
-        if [ -n "$ENVIRONMENT" ]; then
-          FACTS="$FACTS, {\"name\": \"Environment\", \"value\": \"$ENVIRONMENT_ESCAPED\"}"
-        fi
-        
-        if [ -n "$STATUS" ] && [ "$STATUS" != "success" ]; then
-          STATUS_ESCAPED=$(escape_string "$STATUS")
-          FACTS="$FACTS, {\"name\": \"Status\", \"value\": \"$STATUS_ESCAPED\"}"
-        fi
-        
-        # Add additional facts if provided
-        if [ -n "$ADDITIONAL_FACTS" ] && [ "$ADDITIONAL_FACTS" != "[]" ]; then
-          # Remove the opening and closing brackets from ADDITIONAL_FACTS
-          ADDITIONAL_FACTS_CONTENT=$(echo "$ADDITIONAL_FACTS" | sed 's/^\[//; s/\]$//')
-          
-          if [ -n "$ADDITIONAL_FACTS_CONTENT" ]; then
-            FACTS="$FACTS, $ADDITIONAL_FACTS_CONTENT"
-          fi
-        fi
-        
-        # Close the facts array
-        FACTS="$FACTS]"
-        
+
         # Build the actions array conditionally
         ACTIONS=""
         if [ -n "$URL" ]; then
@@ -190,19 +75,26 @@ runs:
           }]"
         fi
 
-        # Send the notification with timeout and error handling
-        CURL_RESPONSE=$(curl -s -w "%{http_code}" --max-time 30 -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL" 2>&1)
-        CURL_EXIT_CODE=$?
+        # Send the notification
+        PAYLOAD=$(cat <<EOF
+        {
+          "@type": "MessageCard",
+          "@context": "http://schema.org/extensions",
+          "themeColor": "$THEME",
+          "summary": "$TITLE_ESCAPED",
+          "sections": [{
+            "activityTitle": "$ACTIVITY_TITLE",
+            "facts": $FACTS,
+            "markdown": true
+          }]$ACTIONS
+        }
+        EOF
+        )
+        curl -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
 
-        if [ $CURL_EXIT_CODE -ne 0 ]; then
-          echo "Error: Failed to send notification to Microsoft Teams. Exit code: $CURL_EXIT_CODE"
+        if [ $? -ne 0 ]; then
+          echo "Failed to send notification to Microsoft Teams."
           exit 1
+        else
+          echo "Notification sent successfully to Microsoft Teams."
         fi
-
-        HTTP_CODE="${CURL_RESPONSE: -3}"
-        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-          echo "Error: Microsoft Teams returned HTTP $HTTP_CODE"
-          exit 1
-        fi
-
-        echo "Notification sent successfully to Microsoft Teams."
